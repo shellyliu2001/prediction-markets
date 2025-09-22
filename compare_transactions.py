@@ -14,7 +14,7 @@ def load_and_prepare_data():
     print(f"Reference data: {len(ref_df)} rows")
     
     # Load the cleaned data to compare
-    cleaned_df = pd.read_csv("cleaned_trades.csv")
+    cleaned_df = pd.read_csv("cleaned_trades_maker.csv")
     print(f"Cleaned data: {len(cleaned_df)} rows")
     
     # Convert timestamp to int for comparison

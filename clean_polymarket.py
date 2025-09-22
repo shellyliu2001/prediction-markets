@@ -64,6 +64,11 @@ def parse_args():
     p.add_argument("--title", default="", help="title column text")
     p.add_argument("--slug", default="", help="slug column text")
     p.add_argument("--event-slug", default="", help="eventSlug column text")
+    
+    # Perspective (optional)
+    p.add_argument("--perspective", choices=["taker", "maker"], default="taker", 
+                   help="perspective for buy/sell classification (default: taker)")
+    
     return p.parse_args()
 
 def infer_token_ids_from_file(df: pd.DataFrame) -> Optional[Tuple[str, str]]:
@@ -102,7 +107,7 @@ def determine_token_ids(df: pd.DataFrame, args) -> Tuple[str, str]:
     return DEFAULT_YES_TOKEN, DEFAULT_NO_TOKEN
 
 def clean_trades(df: pd.DataFrame, YES_TOKEN: str, NO_TOKEN: str,
-                 title: str, slug: str, event_slug: str) -> pd.DataFrame:
+                 title: str, slug: str, event_slug: str, perspective: str = "taker") -> pd.DataFrame:
     TOKENS = {YES_TOKEN, NO_TOKEN}
 
     # numeric casts
@@ -124,42 +129,82 @@ def clean_trades(df: pd.DataFrame, YES_TOKEN: str, NO_TOKEN: str,
     if df.empty:
         raise RuntimeError("No token↔USDC fills found.")
 
-    # Canonicalize **by taker perspective** per transactionHash
-    # If any fill in tx has token on MAKER side → taker bought (BUY).
-    # Else → token on TAKER side → taker sold (SELL).
+    # Canonicalize per transactionHash from specified perspective
+    # Process each outcome token separately to handle mixed transactions
     def canon_group(g: pd.DataFrame) -> pd.DataFrame:
-        if (g["maker_is_token"]).any():
-            # BUY: use only maker_is_token rows for size/volume/price
-            sub = g[g["maker_is_token"]]
-            side = "BUY"
-            token_id = str(sub["makerAssetId"].iloc[0])
-            size_tokens = sub["makerAmountFilled"].sum() / DECIMALS
-            volume_usdc = sub["takerAmountFilled"].sum() / DECIMALS
-        else:
-            # SELL: use only taker_is_token rows
-            sub = g[g["taker_is_token"]]
-            side = "SELL"
-            token_id = str(sub["takerAssetId"].iloc[0])
-            size_tokens = sub["takerAmountFilled"].sum() / DECIMALS
-            volume_usdc = sub["makerAmountFilled"].sum() / DECIMALS
-
-        price = (volume_usdc / size_tokens) if size_tokens else None
-        outcome = "Yes" if token_id == YES_TOKEN else ("No" if token_id == NO_TOKEN else "Unknown")
-
-        return pd.DataFrame([{
-            "transactionHash": g["transactionHash"].iloc[0],
-            "timestamp":       int(g["timestamp"].max()),
-            "side":            side,
-            "outcome":         outcome,
-            "price":           price,
-            "size":            size_tokens,
-            "volume_usdc":     volume_usdc,
-            "asset":           token_id,
-            "proxyWallet":     g["maker"].iloc[0],  # arbitrary representative; you can also choose taker
-            "title":           title,
-            "slug":            slug,
-            "eventSlug":       event_slug,
-        }])
+        results = []
+        
+        # Process each outcome token separately
+        for token_id in [YES_TOKEN, NO_TOKEN]:
+            # Get fills involving this specific token
+            token_fills = g[
+                (g["makerAssetId"].astype(str) == str(token_id)) | 
+                (g["takerAssetId"].astype(str) == str(token_id))
+            ]
+            
+            if token_fills.empty:
+                continue
+                
+            # Calculate net position change for this token
+            net_tokens = 0
+            total_usdc_volume = 0
+            
+            for _, fill in token_fills.iterrows():
+                if str(fill["makerAssetId"]) == str(token_id):
+                    # Token on maker side
+                    if perspective == "taker":
+                        # Taker receives tokens (BUY)
+                        net_tokens += fill["makerAmountFilled"] / DECIMALS
+                        total_usdc_volume += fill["takerAmountFilled"] / DECIMALS
+                    else:  # maker perspective
+                        # Maker gives tokens (SELL)
+                        net_tokens -= fill["makerAmountFilled"] / DECIMALS
+                        total_usdc_volume += fill["takerAmountFilled"] / DECIMALS
+                else:
+                    # Token on taker side
+                    if perspective == "taker":
+                        # Taker gives tokens (SELL)
+                        net_tokens -= fill["takerAmountFilled"] / DECIMALS
+                        total_usdc_volume += fill["makerAmountFilled"] / DECIMALS
+                    else:  # maker perspective
+                        # Maker receives tokens (BUY)
+                        net_tokens += fill["takerAmountFilled"] / DECIMALS
+                        total_usdc_volume += fill["makerAmountFilled"] / DECIMALS
+            
+            # Determine side based on net position change
+            if net_tokens > 0:
+                side = "BUY"
+                size_tokens = net_tokens
+            elif net_tokens < 0:
+                side = "SELL"
+                size_tokens = abs(net_tokens)
+            else:
+                # Net zero - skip this token
+                continue
+                
+            price = (total_usdc_volume / size_tokens) if size_tokens > 0 else None
+            outcome = "Yes" if str(token_id) == YES_TOKEN else "No"
+            
+            results.append({
+                "transactionHash": g["transactionHash"].iloc[0],
+                "timestamp":       int(g["timestamp"].max()),
+                "side":            side,
+                "outcome":         outcome,
+                "price":           price,
+                "size":            size_tokens,
+                "volume_usdc":     total_usdc_volume,
+                "asset":           str(token_id),
+                "proxyWallet":     g["maker"].iloc[0] if perspective == "maker" else g["taker"].iloc[0],
+                "title":           title,
+                "slug":            slug,
+                "eventSlug":       event_slug,
+            })
+        
+        # If no valid trades found, return empty DataFrame
+        if not results:
+            return pd.DataFrame()
+            
+        return pd.DataFrame(results)
 
     out = (df.sort_values("timestamp")
              .groupby("transactionHash", group_keys=False)
@@ -181,7 +226,7 @@ def main():
 
     cleaned = clean_trades(
         df, YES_TOKEN, NO_TOKEN,
-        title=args.title, slug=args.slug, event_slug=args.event_slug
+        title=args.title, slug=args.slug, event_slug=args.event_slug, perspective=args.perspective
     )
     cleaned.to_csv(args.out_path, index=False)
     print(f"✓ Wrote {args.out_path} with {len(cleaned)} trades (no buy/sell pairs).")
