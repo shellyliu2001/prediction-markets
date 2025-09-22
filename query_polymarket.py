@@ -2,7 +2,7 @@
 import csv, time, requests
 
 CONDITION_ID = "0x6220c4164a293367cd40eba018dd6e67c78e4d48e74158845cc9361230bcb34d".lower()
-OUT_CSV      = "/Users/wendyliu/Desktop/mamdani_trades.csv"
+OUT_CSV      = "./polymarket_zm_trades.csv"
 
 # 1) CLOB markets (public) to resolve outcome token IDs (YES/NO) for the condition
 CLOB_MARKETS = "https://clob.polymarket.com/markets?next_cursor="

@@ -4,10 +4,15 @@
 
 import argparse
 from pathlib import Path
+from typing import Optional, Tuple
 import pandas as pd
 
 USDC_ZERO_ID = "0"
 DECIMALS = 1_000_000  # 6 decimals for both tokens and USDC amounts
+
+# Default token IDs for Mamdani market
+DEFAULT_YES_TOKEN = "73817598408230683831072353847770809458837920203753987347670649717002095543451"
+DEFAULT_NO_TOKEN = "102505737677514435038431832532030540090751572260157019042399710777845176913904"
 
 # ---------- Optional: on-chain derivation of token ids (no API) ----------
 def keccak256(data: bytes) -> bytes:
@@ -61,7 +66,7 @@ def parse_args():
     p.add_argument("--event-slug", default="", help="eventSlug column text")
     return p.parse_args()
 
-def infer_token_ids_from_file(df: pd.DataFrame) -> tuple[str, str] | None:
+def infer_token_ids_from_file(df: pd.DataFrame) -> Optional[Tuple[str, str]]:
     # Pick the two most frequent non-zero ids seen in maker/taker asset fields.
     assets = pd.concat([df["makerAssetId"].astype(str), df["takerAssetId"].astype(str)])
     assets = assets[assets != USDC_ZERO_ID]
@@ -81,7 +86,7 @@ def infer_token_ids_from_file(df: pd.DataFrame) -> tuple[str, str] | None:
         return str(uniq[0]), str(uniq[1])
     return None
 
-def determine_token_ids(df: pd.DataFrame, args) -> tuple[str, str]:
+def determine_token_ids(df: pd.DataFrame, args) -> Tuple[str, str]:
     # 1) explicit
     if args.yes_token and args.no_token:
         return str(args.yes_token), str(args.no_token)
@@ -93,11 +98,8 @@ def determine_token_ids(df: pd.DataFrame, args) -> tuple[str, str]:
             return yes, no
         except Exception:
             pass
-    # 3) infer from file
-    inferred = infer_token_ids_from_file(df)
-    if inferred:
-        return inferred
-    raise RuntimeError("Could not determine YES/NO token ids. Pass --yes-token/--no-token or --condition/--collateral.")
+    # 3) use default Mamdani tokens
+    return DEFAULT_YES_TOKEN, DEFAULT_NO_TOKEN
 
 def clean_trades(df: pd.DataFrame, YES_TOKEN: str, NO_TOKEN: str,
                  title: str, slug: str, event_slug: str) -> pd.DataFrame:
